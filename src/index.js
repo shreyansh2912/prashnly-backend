@@ -11,13 +11,18 @@ const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 
-// Connect to Database
 connectDB();
 
-// Middleware
+app.use(cors({
+    origin: '*', // Allow all origins
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    credentials: true
+}));
+app.use(helmet({
+    crossOriginResourcePolicy: false, // Allow cross-origin resource sharing
+}));
 app.use(express.json());
-app.use(cors());
-app.use(helmet());
 app.use(morgan('dev'));
 
 // Routes
@@ -35,7 +40,7 @@ app.use((err, req, res, next) => {
     res.status(500).json({ message: 'Server Error', error: err.message });
 });
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

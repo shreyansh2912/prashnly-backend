@@ -1,8 +1,11 @@
 const Document = require('../models/Document');
-const supabase = require('../config/supabase');
+const mammoth = require('mammoth');
 const pdf = require('pdf-parse');
 const { generateEmbedding } = require('../utils/ai');
 const { v4: uuidv4 } = require('uuid');
+const vectorStore = require('../utils/vectorStore');
+const fs = require('fs');
+const path = require('path');
 
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 200;
@@ -21,19 +24,8 @@ exports.uploadDocument = async (req, res) => {
             return res.status(400).json({ message: 'No file uploaded' });
         }
 
-        const { originalname, mimetype, buffer, size } = req.file;
+        const { originalname, mimetype, size, path: filePath } = req.file;
         const userId = req.user.id;
-        const fileExt = originalname.split('.').pop();
-        const fileName = `${userId}/${uuidv4()}.${fileExt}`;
-
-        // 1. Upload to Supabase Storage
-        const { data: storageData, error: storageError } = await supabase.storage
-            .from('documents')
-            .upload(fileName, buffer, {
-                contentType: mimetype,
-            });
-
-        if (storageError) throw storageError;
 
         // 2. Create MongoDB Document Entry
         const document = await Document.create({
@@ -42,13 +34,18 @@ exports.uploadDocument = async (req, res) => {
             originalName: originalname,
             mimeType: mimetype,
             size: size,
-            storagePath: fileName,
+            storagePath: filePath, // Store local path
             status: 'processing',
         });
+        console.log("before processDocument");
 
         // 3. Process File (Extract Text & Embed)
-        // Note: In production, this should be a background job (Bull/Redis)
-        processDocument(document, buffer);
+        // Read file from disk since we used diskStorage
+        const fileBuffer = fs.readFileSync(filePath);
+        processDocument(document, fileBuffer);
+
+        console.log("after processDocument");
+
 
         res.status(201).json(document);
     } catch (error) {
@@ -60,41 +57,45 @@ exports.uploadDocument = async (req, res) => {
 const processDocument = async (document, buffer) => {
     try {
         let text = '';
+        console.log("before pdf", document.mimeType, buffer);
 
         if (document.mimeType === 'application/pdf') {
             const data = await pdf(buffer);
             text = data.text;
+        } else if (document.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+            const result = await mammoth.extractRawText({ buffer: buffer });
+            text = result.value;
+            if (result.messages.length > 0) {
+                console.log("Mammoth messages:", result.messages);
+            }
         } else {
             // Simple text fallback
             text = buffer.toString('utf-8');
         }
 
         const chunks = splitText(text);
-        const vectorIds = [];
 
-        for (const chunk of chunks) {
-            const embedding = await generateEmbedding(chunk);
+        // Generate embeddings (Local model handles batching/looping)
+        console.log(`[Process ${document._id}] Generating embeddings for ${chunks.length} chunks...`);
+        const embeddings = await generateEmbedding(chunks);
+        console.log(`[Process ${document._id}] Embeddings generated.`);
 
-            // Insert into Supabase 'embeddings' table
-            const { data, error } = await supabase
-                .from('embeddings')
-                .insert({
-                    content: chunk,
-                    metadata: { documentId: document._id.toString(), userId: document.user.toString() },
-                    embedding: embedding,
-                })
-                .select('id');
-
-            if (error) {
-                console.error('Error inserting embedding:', error);
-            } else {
-                vectorIds.push(data[0].id);
+        const vectorItems = chunks.map((chunk, index) => ({
+            id: `${document._id}_${index}`,
+            text: chunk,
+            embedding: embeddings[index],
+            metadata: {
+                documentId: document._id.toString(),
+                userId: document.user.toString()
             }
-        }
+        }));
 
-        // Update Document Status
+        console.log(`[Process ${document._id}] Upserting ${vectorItems.length} vectors to Pinecone...`);
+        await vectorStore.addDocuments(vectorItems);
+        console.log(`[Process ${document._id}] Pinecone upsert complete.`);
+
         document.status = 'completed';
-        document.vectorIds = vectorIds;
+        document.vectorIds = vectorItems.map(v => v.id); // Store IDs if needed for reference
         document.shareToken = uuidv4(); // Generate share token on completion
         await document.save();
 
@@ -123,11 +124,17 @@ exports.deleteDocument = async (req, res) => {
             return res.status(404).json({ message: 'Document not found' });
         }
 
-        // Delete from Supabase Storage
-        await supabase.storage.from('documents').remove([document.storagePath]);
+        // Delete from Local Storage
+        if (document.storagePath && fs.existsSync(document.storagePath)) {
+            try {
+                fs.unlinkSync(document.storagePath);
+            } catch (err) {
+                console.error('Error deleting local file:', err);
+            }
+        }
 
-        // Delete Embeddings (Optional: requires a delete query on Supabase)
-        await supabase.from('embeddings').delete().eq('metadata->>documentId', document._id.toString());
+        // Delete Embeddings (Pinecone)
+        await vectorStore.deleteDocuments({ documentId: document._id.toString() });
 
         await document.deleteOne();
 
