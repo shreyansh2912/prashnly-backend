@@ -11,7 +11,6 @@ exports.chat = async (req, res) => {
         let filter = {};
         let chatThread;
 
-        // 1. Resolve Document & Chat Thread
         if (chatId) {
             chatThread = await Chat.findById(chatId).populate('document');
             if (!chatThread) {
@@ -35,26 +34,19 @@ exports.chat = async (req, res) => {
             return res.status(401).json({ message: 'Unauthorized' });
         }
 
-        // 2. Embed Question
         const queryEmbedding = await generateEmbedding(question);
 
-        // 3. Search Vectors (Pinecone)
         const chunks = await vectorStore.query(queryEmbedding, filter, 5);
 
-        // 4. Construct Context
         const context = chunks.map((chunk) => chunk.content).join('\n\n');
-        console.log("--- DEBUG CONTEXT START ---");
-        console.log(context);
-        console.log("--- DEBUG CONTEXT END ---");
 
-        // 5. Generate Answer
-        const answer = await generateChatResponse(question, context);
+        const history = chatThread ? chatThread.messages.slice(-10) : [];
+        const answer = await generateChatResponse(question, context, history);
 
-        // 6. Persist Chat
         if (!chatThread) {
             chatThread = new Chat({
                 document: document._id,
-                user: req.user ? req.user.id : undefined,
+                user: (req.user && req.user.id !== 'guest') ? req.user.id : undefined,
                 messages: []
             });
         }
@@ -85,12 +77,30 @@ exports.getChatHistory = async (req, res) => {
             return res.status(404).json({ message: 'Chat not found' });
         }
 
-        // Optional: Check ownership if user is logged in, or allow if public share logic permits
-        // For now, allowing access if they have the ID (like a share link)
-
         res.json(chatThread.messages);
     } catch (error) {
         console.error('Get Chat History Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.getAllChats = async (req, res) => {
+    try {
+        const userDocuments = await Document.find({ user: req.user.id }).select('_id');
+        const userDocumentIds = userDocuments.map(doc => doc._id);
+
+        const chats = await Chat.find({
+            $or: [
+                { user: req.user.id },
+                { document: { $in: userDocumentIds } }
+            ]
+        })
+            .populate('document', 'title shareToken')
+            .sort({ updatedAt: -1 });
+
+        res.json(chats);
+    } catch (error) {
+        console.error('Get All Chats Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };

@@ -14,24 +14,29 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: function (req, file, cb) {
-        // Create unique filename: userId-timestamp-originalName
-        // We don't have userId in req.user here yet if this runs before auth? 
-        // Actually auth middleware runs before this usually. 
-        // But to be safe and simple, let's just use timestamp-random
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         cb(null, uniqueSuffix + path.extname(file.originalname));
     }
 });
 
 const fileFilter = (req, file, cb) => {
-    const filetypes = /pdf|txt|doc|docx/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
+    const allowedExtensions = /pdf|txt|doc|docx/;
+    const extname = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
+
+    const allowedMimeTypes = [
+        'application/pdf',
+        'text/plain',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    ];
+
+    const mimetype = allowedMimeTypes.includes(file.mimetype);
 
     if (extname && mimetype) {
         return cb(null, true);
     } else {
-        cb(new Error('Error: File upload only supports the following filetypes - ' + filetypes));
+        console.log("File upload blocked:", file.mimetype, path.extname(file.originalname));
+        cb(new Error('Error: File upload only supports PDF, TXT, DOC, and DOCX files.'));
     }
 };
 

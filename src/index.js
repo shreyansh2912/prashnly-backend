@@ -1,3 +1,4 @@
+
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,13 +10,26 @@ const authRoutes = require('./routes/authRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 
+const http = require('http');
+const { Server } = require('socket.io');
+
 const app = express();
+const server = http.createServer(app);
+
+const io = new Server(server, {
+    cors: {
+        origin: "*", // Allow all origins for now
+        methods: ["GET", "POST"]
+    }
+});
+
+app.set('io', io);
 
 connectDB();
 
 app.use(cors({
     origin: '*', // Allow all origins
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
     credentials: true
 }));
@@ -28,10 +42,18 @@ app.use(morgan('dev'));
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
-app.use('/api/chat', chatRoutes);
+app.use('/api/chats', chatRoutes);
 
 app.get('/', (req, res) => {
     res.send('Prashnly API is running');
+});
+
+// Socket.io Connection
+io.on('connection', (socket) => {
+    console.log('New client connected:', socket.id);
+    socket.on('disconnect', () => {
+        console.log('Client disconnected:', socket.id);
+    });
 });
 
 // Error Handling
@@ -42,6 +64,6 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5001;
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

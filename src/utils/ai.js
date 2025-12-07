@@ -58,7 +58,7 @@ const generateEmbedding = async (text) => {
  * @param {string} context - The retrieved context from documents.
  * @returns {Promise<string>} - The AI's answer.
  */
-const generateChatResponse = async (question, context) => {
+const generateChatResponse = async (question, context, history = []) => {
     try {
         const systemPrompt = `You are a helpful assistant for Prashnly. 
     You are given a context from a document and a question. 
@@ -69,11 +69,14 @@ const generateChatResponse = async (question, context) => {
     Context:
     ${context}`;
 
+        const messages = [
+            { role: 'system', content: systemPrompt },
+            ...history.map(msg => ({ role: msg.role, content: msg.content })),
+            { role: 'user', content: question },
+        ];
+
         const response = await groq.chat.completions.create({
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: question },
-            ],
+            messages: messages,
             model: 'llama-3.1-8b-instant',
             temperature: 0.1,
         });

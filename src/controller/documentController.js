@@ -1,6 +1,8 @@
 const Document = require('../models/Document');
 const mammoth = require('mammoth');
-const pdf = require('pdf-parse');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
 const { generateEmbedding } = require('../utils/ai');
 const { v4: uuidv4 } = require('uuid');
 const vectorStore = require('../utils/vectorStore');
@@ -25,24 +27,36 @@ exports.uploadDocument = async (req, res) => {
         }
 
         const { originalname, mimetype, size, path: filePath } = req.file;
+        const { title, visibility, protectionType, password } = req.body;
         const userId = req.user.id;
+
+        let passwordHash = undefined;
+        if (visibility === 'protected' && protectionType === 'password' && password) {
+            const salt = await bcrypt.genSalt(10);
+            passwordHash = await bcrypt.hash(password, salt);
+        }
 
         // 2. Create MongoDB Document Entry
         const document = await Document.create({
             user: userId,
-            title: originalname,
+            title: title || originalname,
             originalName: originalname,
             mimeType: mimetype,
             size: size,
             storagePath: filePath, // Store local path
             status: 'processing',
+            visibility: visibility || 'private',
+            protectionType: protectionType || 'none',
+            passwordHash: passwordHash,
+            isActive: true
         });
         console.log("before processDocument");
 
         // 3. Process File (Extract Text & Embed)
         // Read file from disk since we used diskStorage
         const fileBuffer = fs.readFileSync(filePath);
-        processDocument(document, fileBuffer);
+        const io = req.app.get('io');
+        processDocument(document, fileBuffer, io);
 
         console.log("after processDocument");
 
@@ -54,14 +68,32 @@ exports.uploadDocument = async (req, res) => {
     }
 };
 
-const processDocument = async (document, buffer) => {
+const processDocument = async (document, buffer, io) => {
     try {
+        const emitProgress = (progress, message) => {
+            if (io) {
+                io.emit(`uploadProgress:${document._id}`, { progress, message });
+            }
+        };
+
+        emitProgress(10, 'Parsing document...');
         let text = '';
         console.log("before pdf", document.mimeType, buffer);
 
         if (document.mimeType === 'application/pdf') {
-            const data = await pdf(buffer);
-            text = data.text;
+            const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+            const data = new Uint8Array(buffer);
+            const loadingTask = pdfjsLib.getDocument(data);
+            const pdfDocument = await loadingTask.promise;
+            let fullText = '';
+
+            for (let i = 1; i <= pdfDocument.numPages; i++) {
+                const page = await pdfDocument.getPage(i);
+                const textContent = await page.getTextContent();
+                const pageText = textContent.items.map(item => item.str).join(' ');
+                fullText += pageText + '\n';
+            }
+            text = fullText;
         } else if (document.mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
             const result = await mammoth.extractRawText({ buffer: buffer });
             text = result.value;
@@ -73,12 +105,16 @@ const processDocument = async (document, buffer) => {
             text = buffer.toString('utf-8');
         }
 
+        emitProgress(30, 'Text extracted. Generating embeddings...');
+
         const chunks = splitText(text);
 
         // Generate embeddings (Local model handles batching/looping)
         console.log(`[Process ${document._id}] Generating embeddings for ${chunks.length} chunks...`);
         const embeddings = await generateEmbedding(chunks);
         console.log(`[Process ${document._id}] Embeddings generated.`);
+
+        emitProgress(70, 'Embeddings generated. Indexing...');
 
         const vectorItems = chunks.map((chunk, index) => ({
             id: `${document._id}_${index}`,
@@ -99,11 +135,15 @@ const processDocument = async (document, buffer) => {
         document.shareToken = uuidv4(); // Generate share token on completion
         await document.save();
 
+        emitProgress(100, 'Document processed successfully.');
         console.log(`Document ${document._id} processed successfully.`);
     } catch (error) {
         console.error(`Error processing document ${document._id}:`, error);
         document.status = 'failed';
         await document.save();
+        if (io) {
+            io.emit(`uploadProgress:${document._id}`, { progress: 0, message: 'Processing failed.' });
+        }
     }
 };
 
@@ -140,6 +180,79 @@ exports.deleteDocument = async (req, res) => {
 
         res.json({ message: 'Document removed' });
     } catch (error) {
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.toggleDocumentStatus = async (req, res) => {
+    try {
+        const document = await Document.findOne({ _id: req.params.id, user: req.user.id });
+
+        if (!document) {
+            return res.status(404).json({ message: 'Document not found' });
+        }
+
+        document.isActive = !document.isActive;
+        await document.save();
+
+        res.json({ message: 'Document status updated', isActive: document.isActive });
+    } catch (error) {
+        console.error('Toggle Status Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.verifyDocumentPassword = async (req, res) => {
+    try {
+        const { shareToken } = req.params;
+        const { password } = req.body;
+
+        const document = await Document.findOne({ shareToken }).select('+passwordHash');
+
+        if (!document) {
+            return res.status(404).json({ message: 'Document not found' });
+        }
+
+        if (document.protectionType !== 'password') {
+            return res.status(400).json({ message: 'Document is not password protected' });
+        }
+
+        if (!document.passwordHash) {
+            return res.status(500).json({ message: 'Server Error: Password hash missing for protected document' });
+        }
+
+        const isMatch = await bcrypt.compare(password, document.passwordHash);
+
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Incorrect password' });
+        }
+
+        // Generate temporary guest token
+        const token = jwt.sign(
+            { id: 'guest', role: 'guest', documentId: document._id },
+            process.env.JWT_SECRET || 'secret',
+            { expiresIn: '2h' } // Token valid for 2 hours
+        );
+
+        res.json({ token });
+    } catch (error) {
+        console.error('Verify Password Error:', error);
+        res.status(500).json({ message: 'Server Error', error: error.message });
+    }
+};
+
+exports.getPublicDocument = async (req, res) => {
+    try {
+        const { shareToken } = req.params;
+        const document = await Document.findOne({ shareToken }).select('title isActive visibility protectionType');
+
+        if (!document) {
+            return res.status(404).json({ message: 'Document not found' });
+        }
+
+        res.json(document);
+    } catch (error) {
+        console.error('Get Public Document Error:', error);
         res.status(500).json({ message: 'Server Error', error: error.message });
     }
 };
