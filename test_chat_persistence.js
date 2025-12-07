@@ -34,10 +34,8 @@ async function testPersistence() {
             console.error('No documents found. Please upload one first.');
             process.exit(1);
         }
-        console.log(`Using document: ${doc.title} (${doc._id})`);
 
         // 2. Start new chat
-        console.log('--- Test 1: Start New Chat ---');
         const req1 = mockReq({
             question: "What is this document about?",
             documentId: doc._id.toString()
@@ -52,8 +50,6 @@ async function testPersistence() {
         }
 
         const chatId = res1.data.chatId;
-        console.log('Chat started. Chat ID:', chatId);
-        console.log('Answer:', res1.data.answer);
 
         if (!chatId) {
             console.error('FAILURE: No chatId returned.');
@@ -61,7 +57,6 @@ async function testPersistence() {
         }
 
         // 3. Continue chat
-        console.log('\n--- Test 2: Continue Chat ---');
         const req2 = mockReq({
             question: "Tell me more.",
             chatId: chatId
@@ -69,10 +64,8 @@ async function testPersistence() {
         const res2 = mockRes();
 
         await chat(req2, res2);
-        console.log('Follow-up answer:', res2.data.answer);
 
         // 4. Fetch History
-        console.log('\n--- Test 3: Fetch History ---');
         const req3 = mockReq({}, { chatId });
         const res3 = mockRes();
 

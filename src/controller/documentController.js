@@ -30,6 +30,20 @@ exports.uploadDocument = async (req, res) => {
         const { title, visibility, protectionType, password } = req.body;
         const userId = req.user.id;
 
+        // Check Plan Limits
+        if (req.user.plan === 'basic') {
+            const docCount = await Document.countDocuments({ user: userId });
+            if (docCount >= 10) {
+                // Delete the uploaded file since we are rejecting the request
+                if (req.file && fs.existsSync(req.file.path)) {
+                    fs.unlinkSync(req.file.path);
+                }
+                return res.status(403).json({
+                    message: 'Plan limit reached. Basic plan allows only 10 documents. Please upgrade.'
+                });
+            }
+        }
+
         let passwordHash = undefined;
         if (visibility === 'protected' && protectionType === 'password' && password) {
             const salt = await bcrypt.genSalt(10);
@@ -50,16 +64,12 @@ exports.uploadDocument = async (req, res) => {
             passwordHash: passwordHash,
             isActive: true
         });
-        console.log("before processDocument");
 
         // 3. Process File (Extract Text & Embed)
         // Read file from disk since we used diskStorage
         const fileBuffer = fs.readFileSync(filePath);
         const io = req.app.get('io');
         processDocument(document, fileBuffer, io);
-
-        console.log("after processDocument");
-
 
         res.status(201).json(document);
     } catch (error) {
@@ -110,9 +120,7 @@ const processDocument = async (document, buffer, io) => {
         const chunks = splitText(text);
 
         // Generate embeddings (Local model handles batching/looping)
-        console.log(`[Process ${document._id}] Generating embeddings for ${chunks.length} chunks...`);
         const embeddings = await generateEmbedding(chunks);
-        console.log(`[Process ${document._id}] Embeddings generated.`);
 
         emitProgress(70, 'Embeddings generated. Indexing...');
 

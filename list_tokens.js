@@ -7,17 +7,7 @@ const connectDB = async () => {
         await mongoose.connect(process.env.MONGO_URI || 'mongodb://localhost:27017/prashnly');
         console.log('MongoDB Connected');
 
-        const documents = await Document.find({});
-        console.log('--- DOCUMENT LIST ---');
-        if (documents.length === 0) {
-            console.log('No documents found in database.');
-        } else {
-            documents.forEach(doc => {
-                console.log(`Title: ${doc.title}`);
-                console.log(`ShareToken: ${doc.shareToken}`);
-                console.log('---');
-            });
-        }
+        await Document.find({});
 
         process.exit();
     } catch (err) {

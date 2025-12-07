@@ -9,7 +9,6 @@ let embeddingPipeline = null;
 
 const getEmbeddingPipeline = async () => {
     if (!embeddingPipeline) {
-        console.log('Loading embedding model...');
         embeddingPipeline = await pipeline('feature-extraction', 'Xenova/multilingual-e5-large', {
             progress_callback: (data) => {
                 if (data.status === 'progress') {
@@ -17,7 +16,6 @@ const getEmbeddingPipeline = async () => {
                 }
             }
         });
-        console.log('Embedding model loaded.');
     }
     return embeddingPipeline;
 };

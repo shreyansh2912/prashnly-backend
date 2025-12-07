@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -9,6 +8,8 @@ const connectDB = require('./config/db');
 const authRoutes = require('./routes/authRoutes');
 const documentRoutes = require('./routes/documentRoutes');
 const chatRoutes = require('./routes/chatRoutes');
+const paymentRoutes = require('./routes/paymentRoutes');
+const analyticsRoutes = require('./routes/analyticsRoutes');
 
 const http = require('http');
 const { Server } = require('socket.io');
@@ -28,21 +29,32 @@ app.set('io', io);
 connectDB();
 
 app.use(cors({
-    origin: '*', // Allow all origins
+    origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'stripe-signature'],
     credentials: true
 }));
 app.use(helmet({
-    crossOriginResourcePolicy: false, // Allow cross-origin resource sharing
+    crossOriginResourcePolicy: false,
 }));
-app.use(express.json());
+
+// Use JSON parser for all routes EXCEPT webhook
+app.use((req, res, next) => {
+    if (req.originalUrl === '/api/payment/webhook') {
+        next();
+    } else {
+        express.json()(req, res, next);
+    }
+});
+
 app.use(morgan('dev'));
 
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/chats', chatRoutes);
+app.use('/api/payment', paymentRoutes);
+app.use('/api/analytics', analyticsRoutes);
 
 app.get('/', (req, res) => {
     res.send('Prashnly API is running');
@@ -50,7 +62,6 @@ app.get('/', (req, res) => {
 
 // Socket.io Connection
 io.on('connection', (socket) => {
-    console.log('New client connected:', socket.id);
     socket.on('disconnect', () => {
         console.log('Client disconnected:', socket.id);
     });

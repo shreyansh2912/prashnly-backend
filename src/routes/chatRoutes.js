@@ -21,23 +21,19 @@ const optionalProtect = async (req, res, next) => {
         try {
             const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
             if (decoded.role === 'guest') {
-                console.log('Valid guest token found');
                 req.user = { id: 'guest', role: 'guest' }; // Mock user for guest
                 return next();
             }
         } catch (err) {
-            console.log('Token verification failed, falling back to shareToken check', err.message);
         }
     }
 
     // 2. Check for Share Token (Public Access)
     if (shareToken) {
-        console.log('Share token present, skipping auth');
         return next();
     }
 
     // 3. Fallback to Standard Auth
-    console.log('No guest token or share token, requiring standard auth');
     return protect(req, res, next);
 };
 
